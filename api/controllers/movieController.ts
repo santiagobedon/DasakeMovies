@@ -199,42 +199,73 @@ export const getFavorites = async (req: Request, res: Response) => {
  * crea un comentario nuevo en una pelicula
  */
 export const addComment = async (req: Request, res: Response) => {
-  const { userId, movieExternalId, content, title, posterUrl } = req.body;
-
-  if (!userId || !movieExternalId || !content)
-    return res.status(400).json({ message: "faltan datos obligatorios" });
-
   try {
-    // verificar si la pelicula ya existe
-    let { data: existingMovie, error: movieError } = await supabase
-      .from("movies")
-      .select("id")
-      .eq("external_id", movieExternalId.toString())
-      .maybeSingle();
+    const { userId, movieExternalId, content, title, posterUrl } = req.body;
 
-    // crear si no existe
-    if (!existingMovie) {
-      const { data: newMovie, error: createError } = await supabase
-        .from("movies")
-        .insert([{ external_id: movieExternalId.toString(), title, poster_url: posterUrl }])
-        .select("id")
-        .single();
-
-      if (createError) throw createError;
-      existingMovie = newMovie;
+    if (!userId || !movieExternalId || !content) {
+      return res.status(400).json({ message: "faltan campos obligatorios" });
     }
 
-    // crear comentario
-    const { data, error } = await supabase
+    // 1️⃣ verificar si la película ya existe
+    const { data: existingMovie, error: movieError } = await supabase
+      .from("movies")
+      .select("*")
+      .eq("external_id", movieExternalId)
+      .single();
+
+    if (movieError && movieError.code !== "PGRST116") {
+      console.error("error al buscar pelicula:", movieError);
+      return res.status(500).json({ message: "error al buscar pelicula" });
+    }
+
+    let movieId;
+
+    // 2️⃣ si no existe, crearla
+    if (!existingMovie) {
+      const { data: newMovie, error: insertError } = await supabase
+        .from("movies")
+        .insert([
+          {
+            external_id: movieExternalId.toString(),
+            title: title || "sin titulo",
+            poster_url: posterUrl || null,
+          },
+        ])
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error("error al crear pelicula:", insertError);
+        return res.status(500).json({ message: "error al crear pelicula" });
+      }
+
+      movieId = newMovie.id;
+    } else {
+      movieId = existingMovie.id;
+    }
+
+    // 3️⃣ ahora crear el comentario
+    const { data: comment, error: commentError } = await supabase
       .from("comments")
-      .insert([{ user_id: userId, movie_id: existingMovie.id, content }])
-      .select();
+      .insert([
+        {
+          user_id: userId,
+          movie_id: movieId,
+          content,
+        },
+      ])
+      .select()
+      .single();
 
-    if (error) throw error;
+    if (commentError) {
+      console.error("error al crear comentario:", commentError);
+      return res.status(500).json({ message: "error al crear comentario" });
+    }
 
-    res.status(201).json({ message: "comentario agregado correctamente", data });
-  } catch (err: any) {
-    res.status(500).json({ message: "error al agregar comentario", error: err.message });
+    return res.status(201).json(comment);
+  } catch (error) {
+    console.error("error general en addComment:", error);
+    return res.status(500).json({ message: "error interno del servidor" });
   }
 };
 
@@ -345,49 +376,85 @@ export const deleteComment = async (req: Request, res: Response) => {
  * CALIFICACIONES / RATINGS
  * ===============================
  */
+/**
+ * ===============================
+ * CALIFICACIONES / RATINGS
+ * ===============================
+ */
+
+/**
+ * crea o actualiza la calificación de una película
+ */
 export const rateMovie = async (req: Request, res: Response) => {
-  const { userId, movieExternalId, rating, title, posterUrl } = req.body;
-
-  if (!userId || !movieExternalId || !rating)
-    return res.status(400).json({ message: "faltan datos obligatorios" });
-
-  if (rating < 1 || rating > 5)
-    return res.status(400).json({ message: "la calificacion debe estar entre 1 y 5" });
-
   try {
-    // buscar o crear pelicula
-    let { data: existingMovie, error: movieError } = await supabase
-      .from("movies")
-      .select("id")
-      .eq("external_id", movieExternalId.toString())
-      .maybeSingle();
+    const { userId, movieExternalId, rating, title, posterUrl } = req.body;
 
-    if (!existingMovie) {
-      const { data: newMovie, error: createError } = await supabase
-        .from("movies")
-        .insert([{ external_id: movieExternalId.toString(), title, poster_url: posterUrl }])
-        .select("id")
-        .single();
-
-      if (createError) throw createError;
-      existingMovie = newMovie;
+    if (!userId || !movieExternalId || !rating) {
+      return res.status(400).json({ message: "faltan campos obligatorios" });
     }
 
-    // insertar o actualizar calificacion
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({ message: "la calificación debe estar entre 1 y 5" });
+    }
+
+    // 1️⃣ verificar si la película ya existe
+    const { data: existingMovie, error: movieError } = await supabase
+      .from("movies")
+      .select("*")
+      .eq("external_id", movieExternalId)
+      .single();
+
+    if (movieError && movieError.code !== "PGRST116") {
+      console.error("error al buscar pelicula:", movieError);
+      return res.status(500).json({ message: "error al buscar pelicula" });
+    }
+
+    let movieId;
+
+    // 2️⃣ si no existe, crearla
+    if (!existingMovie) {
+      const { data: newMovie, error: insertError } = await supabase
+        .from("movies")
+        .insert([
+          {
+            external_id: movieExternalId.toString(),
+            title: title || "sin titulo",
+            poster_url: posterUrl || null,
+          },
+        ])
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error("error al crear pelicula:", insertError);
+        return res.status(500).json({ message: "error al crear pelicula" });
+      }
+
+      movieId = newMovie.id;
+    } else {
+      movieId = existingMovie.id;
+    }
+
+    // 3️⃣ crear o actualizar la calificación
     const { error: upsertError } = await supabase
       .from("rankings")
       .upsert(
-        [{ user_id: userId, movie_id: existingMovie.id, rating }],
+        [{ user_id: userId, movie_id: movieId, rating }],
         { onConflict: "user_id, movie_id" }
       );
 
-    if (upsertError) throw upsertError;
+    if (upsertError) {
+      console.error("error al guardar calificación:", upsertError);
+      return res.status(500).json({ message: "error al guardar calificación" });
+    }
 
-    res.status(201).json({ message: "calificacion registrada correctamente" });
-  } catch (err: any) {
-    res.status(500).json({ message: "error al registrar calificacion", error: err.message });
+    return res.status(201).json({ message: "calificación registrada correctamente" });
+  } catch (error) {
+    console.error("error general en rateMovie:", error);
+    return res.status(500).json({ message: "error interno del servidor" });
   }
 };
+
 
 /**
  * obtiene la calificacion promedio y del usuario actual
