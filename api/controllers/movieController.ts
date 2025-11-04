@@ -205,37 +205,32 @@ export const addComment = async (req: Request, res: Response) => {
     return res.status(400).json({ message: "faltan datos obligatorios" });
 
   try {
-    // 1️⃣ verificar si la pelicula ya existe en la tabla movies
-    const { data: existingMovie, error: movieError } = await supabase
+    // verificar si la pelicula ya existe
+    let { data: existingMovie, error: movieError } = await supabase
       .from("movies")
       .select("id")
-      .eq("external_id", movieExternalId)
-      .single();
+      .eq("external_id", movieExternalId.toString())
+      .maybeSingle();
 
-    if (movieError && movieError.code !== "PGRST116")
-      throw new Error(movieError.message);
-
-    let movieId = existingMovie?.id;
-
-    // 2️⃣ si no existe, crearla
-    if (!movieId) {
+    // crear si no existe
+    if (!existingMovie) {
       const { data: newMovie, error: createError } = await supabase
         .from("movies")
-        .insert([{ external_id: movieExternalId, title, poster_url: posterUrl }])
+        .insert([{ external_id: movieExternalId.toString(), title, poster_url: posterUrl }])
         .select("id")
         .single();
 
-      if (createError) throw new Error(createError.message);
-      movieId = newMovie.id;
+      if (createError) throw createError;
+      existingMovie = newMovie;
     }
 
-    // 3️⃣ crear comentario
+    // crear comentario
     const { data, error } = await supabase
       .from("comments")
-      .insert([{ user_id: userId, movie_id: movieId, content }])
+      .insert([{ user_id: userId, movie_id: existingMovie.id, content }])
       .select();
 
-    if (error) throw new Error(error.message);
+    if (error) throw error;
 
     res.status(201).json({ message: "comentario agregado correctamente", data });
   } catch (err: any) {
@@ -253,17 +248,16 @@ export const getCommentsByMovie = async (req: Request, res: Response) => {
     return res.status(400).json({ message: "falta el id externo de la pelicula" });
 
   try {
-    // obtenemos id interno de la pelicula
-    const { data: movie, error: movieError } = await supabase
+    // obtener id interno de la pelicula
+    const { data: movie } = await supabase
       .from("movies")
       .select("id")
-      .eq("external_id", movieExternalId)
-      .single();
+      .eq("external_id", movieExternalId.toString())
+      .maybeSingle();
 
-    if (movieError) throw new Error(movieError.message);
-    if (!movie) return res.status(404).json({ message: "pelicula no encontrada" });
+    if (!movie) return res.status(200).json([]); // sin error si no hay comentarios
 
-    // obtenemos comentarios con info del usuario
+    // obtener comentarios con info del usuario
     const { data, error } = await supabase
       .from("comments")
       .select(`
@@ -272,16 +266,17 @@ export const getCommentsByMovie = async (req: Request, res: Response) => {
         created_at,
         updated_at,
         user_id,
-        users!left(firstName)
+        users!inner(firstName)
       `)
       .eq("movie_id", movie.id)
       .order("created_at", { ascending: false });
 
-    if (error) throw new Error(error.message);
+    if (error) throw error;
 
-    // mapear para front
     const formatted = (data || []).map((c: any) => ({
+      id: c.id,
       user: c.users?.firstName ?? "usuario",
+      userId: c.user_id,
       text: c.content,
     }));
 
@@ -292,48 +287,35 @@ export const getCommentsByMovie = async (req: Request, res: Response) => {
 };
 
 /**
- * edita un comentario existente
- */
-/**
- * ===============================
- * ACTUALIZA UN COMENTARIO
- * ===============================
+ * actualiza un comentario existente
  */
 export const updateComment = async (req: Request, res: Response) => {
-  const { commentId } = req.params; // ahora viene en params
+  const { commentId } = req.params;
   const { userId, content } = req.body;
 
   if (!commentId || !userId || !content)
     return res.status(400).json({ message: "faltan datos obligatorios" });
 
   try {
-    const { data, error } = await supabase
+    const { data: users, error } = await supabase
       .from("comments")
       .update({ content })
       .eq("id", commentId)
       .eq("user_id", userId)
       .select("id, user_id, content, created_at");
 
-    if (error) throw new Error(error.message);
-    if (!data || data.length === 0)
-      return res.status(404).json({ message: "comentario no encontrado o no autorizado" });
+    if (error) throw error;
+    if (!users || users.length === 0)
+      return res.status(404).json({ message: "usuario no encontrado o no autorizado" });
 
-    res.status(200).json({
-      message: "comentario actualizado correctamente",
-      comment: data[0],
-    });
+    res.status(200).json({ message: "comentario actualizado correctamente", comment: users[0] });
   } catch (err: any) {
-    res.status(500).json({
-      message: "error al actualizar comentario",
-      error: err.message,
-    });
+    res.status(500).json({ message: "error al actualizar comentario", error: err.message });
   }
 };
 
 /**
- * ===============================
- * ELIMINA UN COMENTARIO
- * ===============================
+ * elimina un comentario existente
  */
 export const deleteComment = async (req: Request, res: Response) => {
   const { commentId } = req.params;
@@ -349,14 +331,11 @@ export const deleteComment = async (req: Request, res: Response) => {
       .eq("id", commentId)
       .eq("user_id", userId);
 
-    if (error) throw new Error(error.message);
+    if (error) throw error;
 
     res.status(200).json({ message: "comentario eliminado correctamente" });
   } catch (err: any) {
-    res.status(500).json({
-      message: "error al eliminar comentario",
-      error: err.message,
-    });
+    res.status(500).json({ message: "error al eliminar comentario", error: err.message });
   }
 };
 
@@ -365,10 +344,6 @@ export const deleteComment = async (req: Request, res: Response) => {
  * ===============================
  * CALIFICACIONES / RATINGS
  * ===============================
- */
-
-/**
- * crea o actualiza la calificacion de una pelicula
  */
 export const rateMovie = async (req: Request, res: Response) => {
   const { userId, movieExternalId, rating, title, posterUrl } = req.body;
@@ -380,35 +355,33 @@ export const rateMovie = async (req: Request, res: Response) => {
     return res.status(400).json({ message: "la calificacion debe estar entre 1 y 5" });
 
   try {
-    // 1️⃣ obtener o crear la pelicula
-    const { data: existingMovie, error: movieError } = await supabase
+    // buscar o crear pelicula
+    let { data: existingMovie, error: movieError } = await supabase
       .from("movies")
       .select("id")
-      .eq("external_id", movieExternalId)
-      .single();
+      .eq("external_id", movieExternalId.toString())
+      .maybeSingle();
 
-    if (movieError && movieError.code !== "PGRST116")
-      throw new Error(movieError.message);
-
-    let movieId = existingMovie?.id;
-
-    if (!movieId) {
+    if (!existingMovie) {
       const { data: newMovie, error: createError } = await supabase
         .from("movies")
-        .insert([{ external_id: movieExternalId, title, poster_url: posterUrl }])
+        .insert([{ external_id: movieExternalId.toString(), title, poster_url: posterUrl }])
         .select("id")
         .single();
 
-      if (createError) throw new Error(createError.message);
-      movieId = newMovie.id;
+      if (createError) throw createError;
+      existingMovie = newMovie;
     }
 
-    // 2️⃣ insertar o actualizar calificacion
+    // insertar o actualizar calificacion
     const { error: upsertError } = await supabase
       .from("rankings")
-      .upsert([{ user_id: userId, movie_id: movieId, rating }], { onConflict: "user_id, movie_id" });
+      .upsert(
+        [{ user_id: userId, movie_id: existingMovie.id, rating }],
+        { onConflict: "user_id, movie_id" }
+      );
 
-    if (upsertError) throw new Error(upsertError.message);
+    if (upsertError) throw upsertError;
 
     res.status(201).json({ message: "calificacion registrada correctamente" });
   } catch (err: any) {
@@ -417,54 +390,46 @@ export const rateMovie = async (req: Request, res: Response) => {
 };
 
 /**
- * obtiene la calificacion promedio de una pelicula
- */
-/**
- * obtiene la calificacion promedio y del usuario actual de una pelicula
+ * obtiene la calificacion promedio y del usuario actual
  */
 export const getMovieRating = async (req: Request, res: Response) => {
   const movieExternalId = req.params.movieExternalId;
-  const userId = req.query.userId as string; // recibimos el id del usuario como query
+  const userId = req.query.userId as string;
 
-  if (!movieExternalId) 
+  if (!movieExternalId)
     return res.status(400).json({ message: "falta el id externo de la pelicula" });
 
   try {
-    // obtenemos la pelicula
     const { data: movie } = await supabase
       .from("movies")
       .select("id")
-      .eq("external_id", movieExternalId)
-      .single();
+      .eq("external_id", movieExternalId.toString())
+      .maybeSingle();
 
-    if (!movie) return res.status(404).json({ message: "pelicula no encontrada" });
+    if (!movie) return res.status(200).json({ promedio: 0, userRating: null });
 
-    // calificaciones de todos los usuarios
     const { data: allRatings, error } = await supabase
       .from("rankings")
       .select("rating")
       .eq("movie_id", movie.id);
 
-    if (error) throw new Error(error.message);
+    if (error) throw error;
 
-    const promedio =
-      allRatings && allRatings.length > 0
-        ? allRatings.reduce((acc, cur) => acc + cur.rating, 0) / allRatings.length
-        : 0;
+      const promedio =
+        allRatings && allRatings.length > 0
+          ? (allRatings as any[]).reduce((acc: number, cur: any) => acc + cur.rating, 0) / allRatings.length
+          : 0;
 
-    // calificación del usuario actual
     let userRating: number | null = null;
     if (userId) {
-      const { data: userData, error: userError } = await supabase
+      const { data: userData } = await supabase
         .from("rankings")
         .select("rating")
         .eq("movie_id", movie.id)
         .eq("user_id", userId)
-        .single();
+        .maybeSingle();
 
-      if (!userError && userData) {
-        userRating = userData.rating;
-      }
+      if (userData) userRating = userData.rating;
     }
 
     res.status(200).json({ promedio, userRating });
